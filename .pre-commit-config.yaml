@@ -1,0 +1,58 @@
+## `Pre-commit` module configuration file
+## Can be installed using `pip install pre-commit`
+## The pre-commit hooks can then be installed using `pre-commit install`
+## All checks are run by default when `git commit` is run.
+
+repos:
+# Pre-commit hooks for basic Python processing
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+    -   id: check-added-large-files
+        exclude: '^tests/test_data/.*\.mda$'
+    -   id: check-toml
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+    -   id: mixed-line-ending
+    -   id: trailing-whitespace
+        exclude: '^tests/test_data/.*$'
+
+# Black - for standard code formatting
+-   repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+    -   id: black
+    exclude: '^tests/test_data/.*$'
+
+# Flake8 - for code linting
+-   repo: https://github.com/pycqa/flake8
+    rev: '7.2.0'
+    hooks:
+    -   id: flake8
+    exclude: '^tests/$'
+
+# NumPyDoc - for docstring validation
+-   repo: https://github.com/numpy/numpydoc
+    rev: v1.8.0
+    hooks:
+      - id: numpydoc-validation
+
+# Python Semantic Release & commitizen - for automatic versioning
+-   repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.1.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+      - id: commitizen-branch
+        stages: [pre-push]
+
+# Use "pre-commit install --hook-type commit-msg" to install, pre-commit install doesn't work.
+-   repo: https://github.com/opensource-nepal/commitlint
+    rev: v1.3.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        args: [--config-path, .github/commitlint.yml]
+        additional_dependencies:
+          - commitlint
+          - commitizen
