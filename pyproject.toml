@@ -1,0 +1,69 @@
+## What system to build the project with? I.e. Setuptools, Wheel, Poetry, etc.
+## Using `setuptools` here.
+
+[build-system]
+    requires = [
+        "setuptools>=60",
+        "setuptools-scm>=8.0"
+    ]
+    build-backend = "setuptools.build_meta"
+
+[project]
+    # Project information
+    name = "XSUI"
+    version = "0.1.0"
+    description = "A package for reducing and analysing SAXS and WAXS data."
+    readme = "README.md"
+    license = {file = "LICENSE"}
+    keywords = ["WAXS", "SAXS", "Scattering", "Wide", "Small", "Angle", "X-ray", "Synchrotron"]
+    authors = [
+        {name = "Matthew Gebert", email="matthew.gebert@monash.edu"},
+        ]
+    maintainers = [
+        {name = "Matthew Gebert", email="matthew.gebert@monash.edu"},
+    ]
+
+    # Project compatibility:
+    requires-python = ">=3.10"
+    dependencies = [
+        "numpy",
+        "scipy",
+        "pyFAI",
+        "PyQt6",
+    ]
+
+[project.urls]
+    # Website, documentation and other continuous integration URLS.
+    code = "https://github.com/xraysoftmat/XSUI"
+    documentation = "https://xsui.readthedocs.io/en/latest/"
+
+[project.optional-dependencies]
+    dev = [
+        "pre-commit",
+        "commitizen",
+        "commitlint",
+        "python-semantic-release",
+        "numpydoc",
+        "pytest",
+        "sphinx",
+        "sphinx-rtd-theme",
+    ]
+
+[tool.numpydoc_validation]
+    checks = [
+        "all",   # report on all checks, except the below
+        "EX01",
+        "SA01",
+        "ES01",
+        # "GL08", # TODO: ignore docstring check until numpydoc 1.9.0 is released (where constructors are supported).
+        # "PR02", # TODO: ignore parameter check until numpydoc 1.9.0 is released (where properties setter methods are supported).
+    ]
+
+    exclude = [
+        'tests*',
+    ]
+
+    override_SS05 = [
+        "^SAXS",
+        "^WAXS",
+    ]
