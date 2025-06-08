@@ -30,6 +30,8 @@
         "scipy",
         "pyFAI",
         "PyQt6",
+        "pyOpenCl",
+        "fabio",
     ]
 
 [project.urls]
