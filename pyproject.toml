@@ -24,14 +24,21 @@
     ]
 
     # Project compatibility:
-    requires-python = ">=3.10"
+    requires-python = ">=3.11"
     dependencies = [
+        "pip >= 25.1",
         "numpy",
         "scipy",
         "pyFAI",
         "PyQt6",
         "pyOpenCl",
         "fabio",
+        "pydantic",
+        "fastapi",
+        "fastapi[standard]",
+        # "dash",
+        # "dash_bootstrap_components",
+        "uvicorn[standard]",
     ]
 
 [project.urls]
@@ -39,7 +46,7 @@
     code = "https://github.com/xraysoftmat/XSUI"
     documentation = "https://xsui.readthedocs.io/en/latest/"
 
-[project.optional-dependencies]
+[dependency-groups]
     dev = [
         "pre-commit",
         "commitizen",
