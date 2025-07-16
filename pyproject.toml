@@ -29,6 +29,7 @@
         "pip >= 25.1",
         "numpy",
         "scipy",
+        "pandas",
         "pyFAI",
         "PyQt6",
         "pyOpenCl",
@@ -36,8 +37,8 @@
         "pydantic",
         "fastapi",
         "fastapi[standard]",
-        # "dash",
-        # "dash_bootstrap_components",
+        "dash",
+        "dash_bootstrap_components",
         "uvicorn[standard]",
     ]
 
