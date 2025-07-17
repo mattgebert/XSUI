@@ -40,6 +40,7 @@
         "dash",
         "dash_bootstrap_components",
         # "uvicorn[standard]",
+        "svg.path",
     ]
 
 [project.urls]

@@ -21,7 +21,6 @@ import json
 import scipy.constants as sc
 import datetime
 
-
 class CalibrationTab(dcc.Tab):
     #################################################
     #### LAYOUT / INITIALIZATION
@@ -297,11 +296,39 @@ class CalibrationTab(dcc.Tab):
                                     html.Div(id="calibration_tab-uploaded_filename"),
                                 ]
                             ),
+                            dbc.Row(
+                                html.Div(
+                                # Use detector mask toggle
+                                dbc.Checkbox(id="calibration_tab-use_detector_mask", label="Use Detector Mask", value=False),
+                                ),
+                            ),
+                            dbc.Row(
+                                [
+                                    dcc.Graph(
+                                        figure={"layout" : {
+                                            "title": "Calibrant Image (Draw Pixel Mask)"
+                                        }}, 
+                                        id="calibration_tab-image_plot", 
+                                        config={
+                                            "modeBarButtonsToAdd": [
+                                                # "drawline",
+                                                # "drawopenpath",
+                                                "drawclosedpath",
+                                                "drawcircle",
+                                                "drawrect",
+                                                "eraseshape",
+                                            ]
+                                        },
+                                    ),
+                                    dcc.Store(id="calibration_tab-image_data", data=None),
+                                    dcc.Store(id="calibration_tab-image_plot_mask", data=None),
+                                ]
+                            )
                         ]
                     ),
                     dbc.Col(
                         [
-                            dcc.Graph(figure={}, id="calibration-plot"),
+                            dcc.Graph(figure={}, id="calibration_tab-calibration_plot"),
                         ]
                     ),
                 ]
@@ -569,12 +596,12 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
 
 ## Calibration Data Upload
 @callback(
-    Output("calibration-plot", "figure"),
+    Output("calibration_tab-image_plot", "figure"),
     Output("calibration_tab-uploaded_filename", "children"),
+    Output("calibration_tab-image_data", "data"),
     Input("calibration_tab-upload_calibration_data", "contents"),
     Input("calibration_tab-upload_calibration_data", "filename"),
     Input("calibration_tab-poni_file", "data"),
-    State("calibration_tab-calibrant_dropdown", "value"),
     State("calibration_tab-input-detector_dropdown", "value"),
     prevent_initial_call=True,
     running=[
@@ -582,8 +609,8 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
     ],
 )
 def upload_calibration_data(
-    contents: str, filename: str, poni_file: str, calibrant: str, detector: str
-) -> tuple[go.Figure, str]:
+    contents: str, filename: str, poni_file: str, detector: str
+) -> tuple[go.Figure, str, np.ndarray | None]:
     """Process the uploaded calibration data and return a plot."""
     # A figure:
     fig: go.Figure | None = None
@@ -602,16 +629,18 @@ def upload_calibration_data(
         # fabio_data = fabio.openimage._openimage(byte_buffer_data)
 
         data = fabio_data.data
-        print("Got data:", data.shape)
 
         fig = px.imshow(
             np.log10(fabio_data.data),
             color_continuous_scale="inferno",
-            title=f"Calibration Data (log10)",
+            title = "Calibrant Image (Draw Pixel Mask)",
             labels={"color": "Intensity (log10)"},
         )
     else:
-        fig = go.Figure()
+        fig = go.Figure(layout = {
+            "title": "Calibrant Image (Draw Pixel Mask)",
+        }, responsive=False)
+        data = None
 
     if poni_file:
         poni_dict: dict = json.loads(poni_file)
@@ -628,5 +657,69 @@ def upload_calibration_data(
                     name="Beam Centre",
                 )
             )
+    return fig, filename, data
 
-    return fig, filename
+@callback(
+    Output("calibration_tab-image_plot_mask", "data"),
+    Input("calibration_tab-image_plot", "relayoutData"),
+    State("calibration_tab-image_data", "data"),
+)
+def update_mask(relayoutData: dict, img_data: np.ndarray) -> np.ndarray | None:
+    """Update the masking based on the relayout data."""
+    if relayoutData and "shapes" in relayoutData:
+        # Process the shapes to update the mask
+        shapes = relayoutData["shapes"]
+        # Create numpy coordinate array
+        coords = np.indices(np.asarray(img_data).shape)
+        # Check each pixel is contained in any of the shapes
+        masks = []
+        for shape in shapes:
+            if shape["type"] == "rect":
+                mask = (coords[:,0] >= shape["y0"]) & (coords[:,0] <= shape["y1"]) & \
+                        (coords[:,1] >= shape["x0"]) & (coords[:,1] <= shape["x1"])
+            elif shape["type"] == "circle":
+                # Circle mask
+                center_x = (shape["x0"] + shape["x1"]) / 2
+                center_y = (shape["y0"] + shape["y1"]) / 2
+                radius = (shape["x1"] - shape["x0"]) / 2
+                mask = ((coords[1] - center_x) ** 2 + (coords[0] - center_y) ** 2) <= radius ** 2
+            elif shape["type"] == "path":
+                # Get the trace points
+                descrption = shape["path"]
+                from svg.path import parse_path
+                # from svglib.svg2rlg import svg2rlg
+                path = parse_path(descrption)
+                x_min, y_min, x_max, y_max = path.boundingbox()
+                
+                # Use ray tracing method to see if point is contained or not
+                # i.e. from the point of interest, does a line intersect odd or even?
+                mask = np.zeros(img_data.shape, dtype=bool)
+                for y in range(img_data.shape[0]):
+                    for x in range(img_data.shape[1]):
+                        # Check if point (x, y) is inside the path
+                        if x_min < x and x < x_max and y_min < y and y < y_max:
+                           # Could be inside the path
+                            intersections = 0 
+                            for segment in path:
+                                # Check if the segment intersects with a horizontal line from (x, y)
+                                # Substitute x value of point into the segment equation:
+                                x0,y0 = segment.start.real, segment.start.imag
+                                x1,y1 = segment.end.real, segment.end.imag
+                                if (x0 < x and x < x1) or (x1 < x and x < x0):
+                                    # X within the segment
+                                    point = (x-x0)/(x1-x0)
+                                    if np.isclose(y , segment.point(point).imag, atol=1e-3):
+                                        # Point is on the segment
+                                        intersections += 1
+                            if intersections % 2 == 1:
+                                mask[y, x] = True
+            else:
+                continue
+            masks.append(mask)
+                
+        # Create a new mask
+        mask = np.bitwise_or.reduce(
+            [*masks]
+        )
+        return mask
+    return None
