@@ -11,6 +11,7 @@ from dash.exceptions import PreventUpdate
 from pyFAI.detectors import _detector_class_names
 from pyFAI.calibrant import ALL_CALIBRANTS
 from pyFAI.io.ponifile import PoniFile
+from pyFAI.detectors import Detector, detector_factory
 import fabio
 
 import os
@@ -19,26 +20,6 @@ import io
 import json
 import scipy.constants as sc
 import datetime
-
-# Define editable elements
-# poni_file = dcc.Store(id='calibration_tab-poni_file', data='')
-# poni_filename = html.Div(id="poni-filename", className="text-secondary text-left fs-7",)
-# poni_wavelength = dcc.Input(id="calibration_tab-input-wavelength", type="number", placeholder="Wavelength (meters)", className="form-control")
-# poni_energy = dcc.Input(id="calibration_tab-input-energy", type="number", placeholder="Energy (eV)", className="form-control",)
-# poni_sdd = dcc.Input(id="calibration_tab-input-sdd", type="number", placeholder="Sample-Detector Distance (meters)", className="form-control",)
-# poni_poni1 = dcc.Input(id="calibration_tab-input-poni1", type="number", placeholder="PONI1 (meters)", className="form-control",)
-# poni_poni2 = dcc.Input(id="calibration_tab-input-poni2", type="number", placeholder="PONI2 (meters)", className="form-control",)
-# poni_rot1 = dcc.Input(id="calibration_tab-input-rot1", type="number", placeholder="Rotation 1 (degrees)", className="form-control",)
-# poni_rot2 = dcc.Input(id="calibration_tab-input-rot2", type="number", placeholder="Rotation 2 (degrees)", className="form-control",)
-# poni_rot3 = dcc.Input(id="calibration_tab-input-rot3", type="number", placeholder="Rotation 3 (degrees)", className="form-control",)
-# poni_detector_dropdown = dcc.Dropdown(
-#     id="calibration_tab-input-detector_dropdown",
-#     options=[
-#         {"label": name, "value": name}
-#         for name in _detector_class_names
-#     ],
-#     value=None,
-# ),
 
 
 class CalibrationTab(dcc.Tab):
@@ -288,7 +269,7 @@ class CalibrationTab(dcc.Tab):
                                         className="text-secondary text-left fs-6",
                                     ),
                                     dcc.Dropdown(
-                                        id="calibrant-dropdown",
+                                        id="calibration_tab-calibrant_dropdown",
                                         options=[
                                             {"label": cal, "value": cal}
                                             for cal in ALL_CALIBRANTS.keys()
@@ -334,7 +315,6 @@ class CalibrationTab(dcc.Tab):
 #################################################
 def decode_PONI_file(contents: str) -> PoniFile:
     """
-
     Copied from pyFAI.io.ponifile.PoniFile.read_from_string
     TODO: Have a method that can read from a string IO buffer instead of a file path.
     """
@@ -366,6 +346,16 @@ def wavelength_to_energy(wavelength: float) -> float:
     if wavelength <= 0:
         wavelength = abs(wavelength)
     return sc.h * sc.c / (wavelength) / sc.e
+
+
+def pixel_beamcentre(poni: PoniFile, detector: Detector):
+    psize = detector.pixel1, detector.pixel2
+    detect_coords = np.array([0, 0, 0])  # Beam centre
+    pix_coords = np.array([1 / psize[0], 1 / psize[1], 0]) * (
+        detect_coords - np.array([-poni.poni1, -poni.poni2, poni.dist])
+    ) - np.array([0.5, 0.5, 0])
+    """The pixel coordinates (y,x) of the beam centre in the image"""
+    return pix_coords
 
 
 #################################################
@@ -429,9 +419,9 @@ def save_poni_file(
             "dist": sdd,
             "poni1": poni1,
             "poni2": poni2,
-            "rot1": rot1,
-            "rot2": rot2,
-            "rot3": rot3,
+            "rot1": np.deg2rad(rot1) if rot1 is not None else 0.0,
+            "rot2": np.deg2rad(rot2) if rot2 is not None else 0.0,
+            "rot3": np.deg2rad(rot3) if rot3 is not None else 0.0,
             "wavelength": wavelength,
             "detector": detector,
         }
@@ -543,7 +533,7 @@ def update_rotation1_input(poni_file: str) -> Optional[float]:
         poni_dict: dict = json.loads(poni_file)
         rotation1 = poni_dict.get("rot1")
         if rotation1 is not None:
-            return float(rotation1)
+            return np.rad2deg(float(rotation1))
     raise PreventUpdate
 
 
@@ -558,7 +548,7 @@ def update_rotation2_input(poni_file: str) -> Optional[float]:
         poni_dict: dict = json.loads(poni_file)
         rotation2 = poni_dict.get("rot2")
         if rotation2 is not None:
-            return float(rotation2)
+            return np.rad2deg(float(rotation2))
     raise PreventUpdate
 
 
@@ -573,7 +563,7 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
         poni_dict: dict = json.loads(poni_file)
         rotation3 = poni_dict.get("rot3")
         if rotation3 is not None:
-            return float(rotation3)
+            return np.rad2deg(float(rotation3))
     raise PreventUpdate
 
 
@@ -583,16 +573,20 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
     Output("calibration_tab-uploaded_filename", "children"),
     Input("calibration_tab-upload_calibration_data", "contents"),
     Input("calibration_tab-upload_calibration_data", "filename"),
-    State("calibrant-dropdown", "value"),
+    Input("calibration_tab-poni_file", "data"),
+    State("calibration_tab-calibrant_dropdown", "value"),
+    State("calibration_tab-input-detector_dropdown", "value"),
     prevent_initial_call=True,
     running=[
         (Output("calibration_tab-upload_calibration_data", "disabled"), True, False)
     ],
 )
 def upload_calibration_data(
-    contents: str, filename: str, calibrant: str
+    contents: str, filename: str, poni_file: str, calibrant: str, detector: str
 ) -> tuple[go.Figure, str]:
     """Process the uploaded calibration data and return a plot."""
+    # A figure:
+    fig: go.Figure | None = None
     if contents:
         # Decode the base64 contents
         content_type, content_string = contents.split(",")
@@ -603,25 +597,36 @@ def upload_calibration_data(
         )  # Use BytesIO to read the bytes as a file-like object
         byte_buffer_data.name = filename
         byte_buffer_data.seek(0)
-        head = byte_buffer_data.read(50)
-        print(head)
-        byte_buffer_data.seek(0)
 
-        # # Convert bytes to string
-        # str_data = decoded.decode('utf-8')
-        # # Read the data into a StringIO buffer
-        # str_buffer_data = io.StringIO(str_data)  # Use StringIO to read the string as a file-like object
-        fabio_data = fabio.openimage._openimage(byte_buffer_data)
+        fabio_data = fabio.open(byte_buffer_data)
+        # fabio_data = fabio.openimage._openimage(byte_buffer_data)
 
         data = fabio_data.data
         print("Got data:", data.shape)
 
         fig = px.imshow(
-            fabio_data.data,
+            np.log10(fabio_data.data),
             color_continuous_scale="inferno",
-            title=f"Calibration Data for {calibrant}",
-            labels={"color": "Intensity"},
+            title=f"Calibration Data (log10)",
+            labels={"color": "Intensity (log10)"},
         )
-        return fig, filename
+    else:
+        fig = go.Figure()
 
-    raise PreventUpdate
+    if poni_file:
+        poni_dict: dict = json.loads(poni_file)
+        poni = PoniFile(**poni_dict)
+        det = detector_factory(detector) if detector else poni.detector
+        if det:
+            beam_centre = pixel_beamcentre(poni, det)
+            fig.add_trace(
+                go.Scatter(
+                    x=[beam_centre[1]],
+                    y=[beam_centre[0]],
+                    mode="markers",
+                    marker=dict(color="red", size=10, symbol="x"),
+                    name="Beam Centre",
+                )
+            )
+
+    return fig, filename
