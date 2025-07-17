@@ -32,14 +32,14 @@
         "pandas",
         "pyFAI",
         "PyQt6",
-        "pyOpenCl",
+        # "pyOpenCl",
         "fabio",
         "pydantic",
-        "fastapi",
-        "fastapi[standard]",
+        # "fastapi",
+        # "fastapi[standard]",
         "dash",
         "dash_bootstrap_components",
-        "uvicorn[standard]",
+        # "uvicorn[standard]",
     ]
 
 [project.urls]

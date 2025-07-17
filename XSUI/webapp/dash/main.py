@@ -22,7 +22,7 @@ app.layout = dbc.Container(
         dbc.Row(
             [
                 html.Div(
-                    "WAXS / GI-WAXS Viewer", className="text-primary text-center fs-3"
+                    "WAXS / GI-WAXS Viewer", className="text-primary text-center fs-1"
                 )
             ]
         ),
