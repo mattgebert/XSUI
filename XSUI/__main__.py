@@ -2,6 +2,11 @@
 Define the main entry point for the XSUI web application.
 """
 
+# Prevent use of pycache.
+import sys
+
+sys.dont_write_bytecode = True
+
 import subprocess, os
 
 # # Attempt to run the XSUI webapp application
