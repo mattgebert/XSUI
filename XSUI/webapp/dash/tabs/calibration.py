@@ -602,6 +602,7 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
     Input("calibration_tab-upload_calibration_data", "contents"),
     Input("calibration_tab-upload_calibration_data", "filename"),
     Input("calibration_tab-poni_file", "data"),
+    Input("calibration_tab-image_plot_mask", "data"),
     State("calibration_tab-input-detector_dropdown", "value"),
     prevent_initial_call=True,
     running=[
@@ -609,7 +610,7 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
     ],
 )
 def upload_calibration_data(
-    contents: str, filename: str, poni_file: str, detector: str
+    contents: str, filename: str, poni_file: str, mask_data: np.ndarray | None, detector: str,
 ) -> tuple[go.Figure, str, np.ndarray | None]:
     """Process the uploaded calibration data and return a plot."""
     # A figure:
@@ -639,8 +640,23 @@ def upload_calibration_data(
     else:
         fig = go.Figure(layout = {
             "title": "Calibrant Image (Draw Pixel Mask)",
-        }, responsive=False)
+        })
         data = None
+
+    print("the mask:", np.shape(mask_data) if mask_data else None)
+    if mask_data:
+        # If mask data is provided, apply it to the image
+        mask_shape = np.shape(mask_data)
+        x, y = np.indices(mask_shape)
+        colorscale = px.colors.make_colorscale(
+            ["rgba(256,0,0,0)", "rgba(256,0,0,256)"]
+        )
+        fig.add_image(
+            mask_data,
+            colorscale=colorscale,
+            colormodel="rgba",
+            # color="rgb(256, 0, 0)",
+        )
 
     if poni_file:
         poni_dict: dict = json.loads(poni_file)
@@ -662,17 +678,34 @@ def upload_calibration_data(
 @callback(
     Output("calibration_tab-image_plot_mask", "data"),
     Input("calibration_tab-image_plot", "relayoutData"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-use_detector_mask", "value"),
     State("calibration_tab-image_data", "data"),
 )
-def update_mask(relayoutData: dict, img_data: np.ndarray) -> np.ndarray | None:
+def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_data: np.ndarray) -> np.ndarray | None:
     """Update the masking based on the relayout data."""
+    masks = []
+    img_data_shape = None
+    if img_data:
+        img_data_shape = np.shape(img_data)
+    
+    if detector and use_mask:
+        mask = detector_factory(detector).mask
+        if img_data and np.shape(img_data) == mask.shape:
+            masks.append(mask)
+            print("Detector mask added!")
+        elif img_data is None:
+            img_data_shape = mask.shape
+            masks.append(mask)
+        else:
+            print(f"Detector mask shape {mask.shape} does not match image data shape {np.shape(img_data)}. Skipping detector mask.")        
+    
     if relayoutData and "shapes" in relayoutData:
         # Process the shapes to update the mask
         shapes = relayoutData["shapes"]
         # Create numpy coordinate array
         coords = np.indices(np.asarray(img_data).shape)
         # Check each pixel is contained in any of the shapes
-        masks = []
         for shape in shapes:
             if shape["type"] == "rect":
                 mask = (coords[:,0] >= shape["y0"]) & (coords[:,0] <= shape["y1"]) & \
@@ -693,9 +726,9 @@ def update_mask(relayoutData: dict, img_data: np.ndarray) -> np.ndarray | None:
                 
                 # Use ray tracing method to see if point is contained or not
                 # i.e. from the point of interest, does a line intersect odd or even?
-                mask = np.zeros(img_data.shape, dtype=bool)
-                for y in range(img_data.shape[0]):
-                    for x in range(img_data.shape[1]):
+                mask = np.zeros(img_data_shape, dtype=bool)
+                for y in range(img_data_shape[0]):
+                    for x in range(img_data_shape[1]):
                         # Check if point (x, y) is inside the path
                         if x_min < x and x < x_max and y_min < y and y < y_max:
                            # Could be inside the path
@@ -708,7 +741,7 @@ def update_mask(relayoutData: dict, img_data: np.ndarray) -> np.ndarray | None:
                                 if (x0 < x and x < x1) or (x1 < x and x < x0):
                                     # X within the segment
                                     point = (x-x0)/(x1-x0)
-                                    if np.isclose(y , segment.point(point).imag, atol=1e-3):
+                                    if np.isclose(y, segment.point(point).imag, atol=1e-3):
                                         # Point is on the segment
                                         intersections += 1
                             if intersections % 2 == 1:
@@ -716,7 +749,8 @@ def update_mask(relayoutData: dict, img_data: np.ndarray) -> np.ndarray | None:
             else:
                 continue
             masks.append(mask)
-                
+        
+    if len(masks) > 0:
         # Create a new mask
         mask = np.bitwise_or.reduce(
             [*masks]
