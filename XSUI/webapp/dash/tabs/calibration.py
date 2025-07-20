@@ -1,6 +1,6 @@
 # Import packages
 from typing import Optional
-from dash import Dash, html, dash_table, dcc, callback, Output, Input, State
+from dash import Dash, html, dash_table, dcc, callback, Output, Input, State, ctx
 import fabio.readbytestream
 import pandas as pd
 import numpy as np
@@ -13,6 +13,8 @@ from pyFAI.calibrant import ALL_CALIBRANTS
 from pyFAI.io.ponifile import PoniFile
 from pyFAI.detectors import Detector, detector_factory
 import fabio
+
+from svg.path import parse_path
 
 import os
 import base64
@@ -65,7 +67,7 @@ class CalibrationTab(dcc.Tab):
                                     dbc.Col(
                                         [
                                             dcc.Upload(
-                                                id="calibration_tab-upload-poni",
+                                                id="calibration_tab-upload_poni",
                                                 children=html.Button(
                                                     "Upload PONI File"
                                                 ),
@@ -104,6 +106,12 @@ class CalibrationTab(dcc.Tab):
                                     for name in _detector_class_names
                                 ],
                                 value=None,
+                            ),
+                            dbc.Row(
+                                html.Div(
+                                # Use detector mask toggle
+                                dbc.Checkbox(id="calibration_tab-input-use_detector_mask", label="Use Detector Mask", value=True),
+                                ),
                             ),
                             # PONI Properties
                             dbc.Row(
@@ -297,12 +305,6 @@ class CalibrationTab(dcc.Tab):
                                 ]
                             ),
                             dbc.Row(
-                                html.Div(
-                                # Use detector mask toggle
-                                dbc.Checkbox(id="calibration_tab-use_detector_mask", label="Use Detector Mask", value=False),
-                                ),
-                            ),
-                            dbc.Row(
                                 [
                                     dcc.Graph(
                                         figure={"layout" : {
@@ -394,10 +396,10 @@ def pixel_beamcentre(poni: PoniFile, detector: Detector):
 @callback(
     Output("calibration_tab-poni_file", "data"),
     Output("poni-filename", "children"),
-    Input("calibration_tab-upload-poni", "filename"),
-    Input("calibration_tab-upload-poni", "contents"),
+    Input("calibration_tab-upload_poni", "filename"),
+    Input("calibration_tab-upload_poni", "contents"),
     prevent_initial_call=True,
-    running=[(Output("calibration_tab-upload-poni", "disabled"), True, False)],
+    running=[(Output("calibration_tab-upload_poni", "disabled"), True, False)],
 )
 def upload_poni_file(filename: str, contents: str) -> tuple[PoniFile | None, str]:
     """Process the uploaded PONI file and return its contents."""
@@ -593,26 +595,68 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
             return np.rad2deg(float(rotation3))
     raise PreventUpdate
 
+## Figure Generation
 
-## Calibration Data Upload
 @callback(
+    Output("calibration_tab-image_data", "data"),
     Output("calibration_tab-image_plot", "figure"),
     Output("calibration_tab-uploaded_filename", "children"),
-    Output("calibration_tab-image_data", "data"),
     Input("calibration_tab-upload_calibration_data", "contents"),
     Input("calibration_tab-upload_calibration_data", "filename"),
     Input("calibration_tab-poni_file", "data"),
     Input("calibration_tab-image_plot_mask", "data"),
+    State('calibration_tab-image_plot', "figure"),
     State("calibration_tab-input-detector_dropdown", "value"),
-    prevent_initial_call=True,
+    State("calibration_tab-image_data", "data"),
     running=[
-        (Output("calibration_tab-upload_calibration_data", "disabled"), True, False)
+        (Output("calibration_tab-upload_calibration_data", "disabled"), True, False),
+        
     ],
+    prevent_initial_call=True,
 )
+def figure_callback(img_upload_contents: str, filename: str, poni_file: str, mask_data: np.ndarray | None,
+                    figure: go.Figure, detector: str, fig_data: np.ndarray | None) -> tuple[np.ndarray | None, go.Figure, str]:
+    # Get the ID name of the trigger 
+    trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
+    
+    print("Trigger ID:", trigger_id)
+    # Whether to create a new figure or not from uploaded data:
+    if trigger_id == "calibration_tab-upload_calibration_data":
+        fig, fig_data = upload_calibration_data(img_upload_contents, filename)
+    else:
+        fig = figure
+    
+    # Add beam centre scatter if PONI file is available
+    if trigger_id == "calibration_tab-poni_file":
+        # Update or add the beam centre scatter trace
+        fig = update_image_figure_beamcentre(poni_file, fig, detector)
+        
+    if trigger_id == "calibration_tab-image_plot_mask":
+        # Update or add the mask heatmap trace
+        fig = update_image_figure_mask(mask_data, fig)
+        
+    return (fig_data, fig, filename)
+
+### Calibration Data Upload
 def upload_calibration_data(
-    contents: str, filename: str, poni_file: str, mask_data: np.ndarray | None, detector: str,
-) -> tuple[go.Figure, str, np.ndarray | None]:
-    """Process the uploaded calibration data and return a plot."""
+    contents: str, filename: str,
+) -> tuple[go.Figure, np.ndarray | None]:
+    """
+    Process the uploaded calibration data and return a plot.
+    
+    Parameters
+    ----------
+    contents : str
+        The base64 encoded contents of the uploaded file.
+    filename : str
+        The name of the uploaded file.
+    Returns
+    -------
+    fig : go.Figure
+        The figure containing the calibration data.
+    data : np.ndarray | None
+        The image data from the uploaded file, or None if no data is available.
+    """
     # A figure:
     fig: go.Figure | None = None
     if contents:
@@ -643,62 +687,132 @@ def upload_calibration_data(
         })
         data = None
 
-    print("the mask:", np.shape(mask_data) if mask_data else None)
-    if mask_data:
-        # If mask data is provided, apply it to the image
-        mask_shape = np.shape(mask_data)
-        x, y = np.indices(mask_shape)
-        colorscale = px.colors.make_colorscale(
-            ["rgba(256,0,0,0)", "rgba(256,0,0,256)"]
-        )
-        fig.add_image(
-            mask_data,
-            colorscale=colorscale,
-            colormodel="rgba",
-            # color="rgb(256, 0, 0)",
-        )
+    return fig, data
 
+
+def update_image_figure_beamcentre(poni_file: str, figure: go.Figure, detector: str) -> go.Figure:
+     # Check if figure already has a heatmap trace
+    has_beamcentre_scatter = False
+    bc_obj = None
+    if "data" in figure:
+        for ax_obj in figure["data"]:
+            if ax_obj["type"] == "scatter" and ax_obj["name"] == "Beam Centre":
+                bc_obj = ax_obj
+                has_beamcentre_scatter = True
+                break
+    
+    bc_coords = None
     if poni_file:
         poni_dict: dict = json.loads(poni_file)
         poni = PoniFile(**poni_dict)
         det = detector_factory(detector) if detector else poni.detector
         if det:
-            beam_centre = pixel_beamcentre(poni, det)
-            fig.add_trace(
-                go.Scatter(
-                    x=[beam_centre[1]],
-                    y=[beam_centre[0]],
-                    mode="markers",
-                    marker=dict(color="red", size=10, symbol="x"),
-                    name="Beam Centre",
-                )
+            bc_coords = pixel_beamcentre(poni, det)
+            
+    if bc_coords is not None:    
+        if bc_obj:
+            # Update the existing scatter trace with new beam centre coordinates
+            bc_obj["x"] = [bc_coords[1]]
+            bc_obj["y"] = [bc_coords[0]]
+        else:
+            # Create new tracefigure.add_trace(
+            go.Scatter(
+                x=[bc_coords[1]],
+                y=[bc_coords[0]],
+                mode="markers",
+                marker=dict(color="red", size=10, symbol="x"),
+                name="Beam Centre",
             )
-    return fig, filename, data
+    elif has_beamcentre_scatter and bc_obj:
+        # If no beam centre coordinates, remove the scatter trace
+        figure["data"] = [
+            ax_obj
+            for ax_obj in figure["data"]
+            if not (ax_obj["type"] == "scatter" and ax_obj["name"] == "Beam Centre")
+        ]   
+    return figure
+
+def update_image_figure_mask(mask_data: np.ndarray | None, figure: dict | go.Figure) -> go.Figure:
+    # Check if figure already has a heatmap trace
+    if isinstance(figure, dict):
+        figure = go.Figure(**figure)
+    has_mask_heatmap = False
+    heatmap = None
+    if "data" in figure:
+        for ax_obj in figure["data"]:
+            if ax_obj["type"] == "heatmap" and ax_obj["name"] == "Mask":
+                heatmap = ax_obj
+                has_mask_heatmap = True
+                break
+    
+    if mask_data:
+        mask_data = np.asarray(mask_data)
+        # If mask data is provided, apply it to the image
+        mask_shape = np.shape(mask_data)
+        x, y = np.indices(mask_shape)
+        colorscale = [[0, "rgba(0,0,0,0)"], [1, "rgba(0,222,256,1)"]]
+        no_hover_mask_data = mask_data.astype(object)
+        no_hover_mask_data[no_hover_mask_data == 0] = None  # Set non-masked pixels to None
+        
+        if has_mask_heatmap and heatmap:
+            # Update the existing heatmap trace
+            heatmap["z"] = no_hover_mask_data
+            
+        if not has_mask_heatmap:
+            figure.add_heatmap(
+                z = no_hover_mask_data,
+                colorscale = colorscale,
+                hoverongaps= False,
+                colorbar=None,
+                showscale=False,
+                # hovertemplate="Mask",
+                name="Mask",
+            )
+    elif has_mask_heatmap:
+        # If no mask data is provided, remove the heatmap trace
+        figure["data"] = [
+            ax_obj
+            for ax_obj in figure["data"]
+            if not (ax_obj["type"] == "heatmap" and ax_obj["name"] == "Mask")
+        ]
+    return figure        
 
 @callback(
     Output("calibration_tab-image_plot_mask", "data"),
     Input("calibration_tab-image_plot", "relayoutData"),
     Input("calibration_tab-input-detector_dropdown", "value"),
-    Input("calibration_tab-use_detector_mask", "value"),
+    Input("calibration_tab-input-use_detector_mask", "value"),
     State("calibration_tab-image_data", "data"),
+    State("calibration_tab-image_plot_mask", "data"),
+    prevent_initial_call=True,
+    running=[
+        (Output("calibration_tab-upload_calibration_data", "disabled"), True, False),
+        (Output("calibration_tab-upload_poni", "disabled"), True, False),
+        (Output("calibration_tab-image_plot", "interactive"), False, True),
+    ],
 )
-def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_data: np.ndarray) -> np.ndarray | None:
+def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_data: np.ndarray, existing_mask: np.ndarray) -> np.ndarray | None:
     """Update the masking based on the relayout data."""
+    
+    trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
+    # if 
+    
     masks = []
     img_data_shape = None
-    if img_data:
+    if img_data is not None:
+        img_data = np.asarray(img_data)
         img_data_shape = np.shape(img_data)
+        masks.append(img_data <= 0) # Add a mask for zero values in the image data
     
     if detector and use_mask:
         mask = detector_factory(detector).mask
-        if img_data and np.shape(img_data) == mask.shape:
+        if img_data is not None and np.shape(img_data) == mask.shape:
             masks.append(mask)
-            print("Detector mask added!")
         elif img_data is None:
             img_data_shape = mask.shape
             masks.append(mask)
         else:
-            print(f"Detector mask shape {mask.shape} does not match image data shape {np.shape(img_data)}. Skipping detector mask.")        
+            print(f"Detector mask shape {mask.shape} does not match image data shape {np.shape(img_data)}. Skipping detector mask.")
     
     if relayoutData and "shapes" in relayoutData:
         # Process the shapes to update the mask
@@ -719,8 +833,6 @@ def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_dat
             elif shape["type"] == "path":
                 # Get the trace points
                 descrption = shape["path"]
-                from svg.path import parse_path
-                # from svglib.svg2rlg import svg2rlg
                 path = parse_path(descrption)
                 x_min, y_min, x_max, y_max = path.boundingbox()
                 
