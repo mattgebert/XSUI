@@ -792,10 +792,10 @@ def update_image_figure_mask(mask_data: np.ndarray | None, figure: dict | go.Fig
     ],
 )
 def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_data: np.ndarray, existing_mask: np.ndarray) -> np.ndarray | None:
-    """Update the masking based on the relayout data."""
+    """Reconstruct the masking based on the relayout data."""
     
     trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
-    # if 
+    # 
     
     masks = []
     img_data_shape = None

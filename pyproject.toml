@@ -41,6 +41,9 @@
         "dash_bootstrap_components",
         # "uvicorn[standard]",
         "svg.path",
+        "flask",
+        "sqlalchemy",
+        "flask_sqlalchemy",
     ]
 
 [project.urls]
