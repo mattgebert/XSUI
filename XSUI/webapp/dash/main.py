@@ -8,27 +8,30 @@ import pandas as pd
 import plotly.express as px
 import dash_bootstrap_components as dbc
 
-temp_dir = tempfile.gettempdir()
-temp_sqlite_db = os.path.join(temp_dir, "XSUI_sqlite.db")
+# temp_dir = tempfile.gettempdir()
+# temp_sqlite_db = os.path.join(temp_dir, "XSUI_sqlite.db")
 
 # Initialize Flask server
 server = flask.Flask(__name__)
 server.app_context().push()
-server.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + temp_sqlite_db
-server.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# server.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + temp_sqlite_db
+# server.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # auth = dash_auth.BasicAuth(app, USERNAME_PASSWORD_PAIRS)
 
 # Initialize the app - incorporate a Dash Bootstrap theme
 external_stylesheets = [dbc.themes.CERULEAN]
 app = Dash(__name__, server=server, external_stylesheets=external_stylesheets)
-db = SQLAlchemy()
-db.init_app(server)
 # db = SQLAlchemy(server)
+# # db.init_app(server)
+# # db = SQLAlchemy(server)
+# import XSUI.webapp.dash.models
+# # Setup the database
+# db.create_all()
 
-# Setup the database
-db.create_all()
+# print("Tables created: ", db.Model.metadata.tables.keys())
 
-print("Database initialized at:", temp_sqlite_db)
+# print("Database initialized at:", temp_sqlite_db)
+
 
 # Create the tabs
 from XSUI.webapp.dash.tabs import CalibrationTab
@@ -44,17 +47,34 @@ app.layout = dbc.Container(
     [
         dbc.Row(
             [
-                html.Div(
-                    "WAXS / GI-WAXS Viewer", className="text-primary text-center fs-1"
-                )
-            ]
-        ),
-        dbc.Row(
-            [
-                html.Div(
-                    "Powered by pyFAI / Dash / Plotly",
-                    className="text-secondary text-center fs-5",
-                )
+                dbc.Col(
+                    [
+                        html.Div(
+                            "WAXS / GI-WAXS Viewer",
+                            className="text-primary text-center fs-1",
+                        )
+                    ],
+                    width=8,
+                ),
+                dbc.Col(
+                    [
+                        html.Div(
+                            [
+                                "Powered by ",
+                                html.A("pyFAI", href="https://pyfai.readthedocs.io/"),
+                                " / ",
+                                html.A("Dash", href="https://dash.plotly.com/"),
+                                " / ",
+                                html.A(
+                                    "Plotly",
+                                    href="https://plotly.com/graphing-libraries/",
+                                ),
+                            ],
+                            className="text-secondary text-center fs-5",
+                        )
+                    ],
+                    width=4,
+                ),
             ]
         ),
         dcc.Tabs([calibrant_tab, giwaxs_tab, waxs_tab]),

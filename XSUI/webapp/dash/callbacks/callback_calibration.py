@@ -20,13 +20,13 @@ import json
 import scipy.constants as sc
 import datetime
 
-from XSUI.webapp.dash.models import (
-    ImageCalibrant,
-    DetectorMask,
-    CustomMask,
-    CompositeMask,
-)
-from XSUI.webapp.dash.main import db
+# from XSUI.webapp.dash.models import (
+#     ImageCalibrant,
+#     DetectorMask,
+#     CustomMask,
+#     CompositeMask,
+# )
+# from XSUI.webapp.dash.main import db
 
 
 #################################################
@@ -287,10 +287,8 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
 
 
 ## Figure Generation
-
-
 @callback(
-    # Output("calibration_tab-image_data", "data"),
+    Output("calibration_tab-image_data", "data"),
     Output("calibration_tab-image_plot", "figure"),
     Output("calibration_tab-uploaded_filename", "children"),
     Input("calibration_tab-upload_calibration_data", "contents"),
@@ -299,7 +297,7 @@ def update_rotation3_input(poni_file: str) -> Optional[float]:
     Input("calibration_tab-image_plot_mask", "data"),
     State("calibration_tab-image_plot", "figure"),
     State("calibration_tab-input-detector_dropdown", "value"),
-    # State("calibration_tab-image_data", "data"),
+    State("calibration_tab-image_data", "data"),
     running=[
         (Output("calibration_tab-upload_calibration_data", "disabled"), True, False),
     ],
@@ -310,9 +308,11 @@ def figure_callback(
     filename: str,
     poni_file: str,
     mask_data: np.ndarray | None,
-    # figure: go.Figure, detector: str, fig_data: np.ndarray | None) -> tuple[np.ndarray | None, go.Figure, str]:
     figure: go.Figure,
     detector: str,
+    fig_data: np.ndarray | None,
+    # figure: go.Figure,
+    # detector: str,
 ) -> tuple[np.ndarray | None, go.Figure, str]:
     # Get the ID name of the trigger
     trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
@@ -323,15 +323,15 @@ def figure_callback(
         fig, fig_data = upload_calibration_data(img_upload_contents, filename)
     else:
         fig = figure
-        query = db.session.query(ImageCalibrant)
-        calibrant_image = query.filter_by(filename=filename)
-        print("The Query is :", calibrant_image)
-        calibrant_image = calibrant_image.first()
-        if calibrant_image:
-            fig_data = calibrant_image.image_data
-        else:
-            fig_data = None
-            print(f"Image data for {filename} not found in database.")
+        # query = db.session.query(ImageCalibrant)
+        # calibrant_image = query.filter_by(filename=filename)
+        # print("The Query is :", calibrant_image)
+        # calibrant_image = calibrant_image.first()
+        # if calibrant_image:
+        #     fig_data = calibrant_image.image_data
+        # else:
+        #     fig_data = None
+        #     print(f"Image data for {filename} not found in database.")
 
     # Add beam centre scatter if PONI file is available
     if trigger_id == "calibration_tab-poni_file":
@@ -385,10 +385,10 @@ def upload_calibration_data(
         data = fabio_data.data
 
         # Place the image data into the database.
-        db_img = ImageCalibrant(filename, data)
-        db.session.add(db_img)
-        db.session.commit()
-        print("Image data added to database.")
+        # db_img = ImageCalibrant(filename, data)
+        # db.session.add(db_img)
+        # db.session.commit()
+        # print("Image data added to database.")
 
         fig = px.imshow(
             np.log10(fabio_data.data),
@@ -507,7 +507,7 @@ def update_image_figure_mask(
     Input("calibration_tab-image_plot", "relayoutData"),
     Input("calibration_tab-input-detector_dropdown", "value"),
     Input("calibration_tab-input-use_detector_mask", "value"),
-    # State("calibration_tab-image_data", "data"),
+    State("calibration_tab-image_data", "data"),
     State("calibration_tab-image_plot_mask", "data"),
     prevent_initial_call=True,
     running=[
@@ -516,20 +516,26 @@ def update_image_figure_mask(
         (Output("calibration_tab-image_plot", "interactive"), False, True),
     ],
 )
-# def update_mask(relayoutData: dict, detector: str | None, use_mask:bool, img_data: np.ndarray, existing_mask: np.ndarray) -> np.ndarray | None:
 def update_mask(
-    relayoutData: dict, detector: str | None, use_mask: bool, existing_mask: np.ndarray
+    relayoutData: dict,
+    detector: str | None,
+    use_mask: bool,
+    img_data: np.ndarray,
+    existing_mask: np.ndarray,
 ) -> np.ndarray | None:
+    # def update_mask(
+    #     relayoutData: dict, detector: str | None, use_mask: bool, existing_mask: np.ndarray
+    # ) -> np.ndarray | None:
     """Reconstruct the masking based on the relayout data."""
 
     trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
 
     # Query the database for the image data
-    query = db.session.query(ImageCalibrant)
-    if query:
-        img_data = query.first().image_data
-    else:
-        img_data = None
+    # query = db.session.query(ImageCalibrant)
+    # if query:
+    #     img_data = query.first().image_data
+    # else:
+    #     img_data = None
 
     masks = []
     img_data_shape = None

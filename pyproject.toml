@@ -14,7 +14,7 @@
     version = "0.1.0"
     description = "A package for reducing and analysing SAXS and WAXS data."
     readme = "README.md"
-    license = {file = "LICENSE"}
+    # license = {file = "LICENSE"}
     keywords = ["WAXS", "SAXS", "Scattering", "Wide", "Small", "Angle", "X-ray", "Synchrotron"]
     authors = [
         {name = "Matthew Gebert", email="matthew.gebert@monash.edu"},
