@@ -5,11 +5,15 @@ Models for storing the masks used in WAXS and GIWAXS imaging in a database using
 import numpy as np
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
-from XSUI.webapp.dash.models import models_db
 from typing import List
 
 
-class DetectorMask(models_db.Model):
+# Create an association table for CompositeMask and CustomMask
+class MaskBase(orm.DeclarativeBase):
+    pass
+
+
+class DetectorMask(MaskBase):
     """
     A model for storing detector masks used in WAXS and GIWAXS imaging.
 
@@ -30,21 +34,16 @@ class DetectorMask(models_db.Model):
         self.detector_mask = detector_mask.dumps()
 
 
-# Create an association table for CompositeMask and CustomMask
-class Base(orm.DeclarativeBase):
-    pass
-
-
 association_table = sa.Table(
     "composite_mask_associations",
-    Base.metadata,
+    MaskBase.metadata,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("custom_mask_id", sa.ForeignKey("custom_masks.id")),
     sa.Column("composite_mask_id", sa.ForeignKey("composite_masks.id")),
 )
 
 
-class CustomMask(models_db.Model):
+class CustomMask(MaskBase):
     """
     A model for storing custom masks used in WAXS and GIWAXS imaging.
 
@@ -63,7 +62,7 @@ class CustomMask(models_db.Model):
         self.mask_data = mask_data.dumps()
 
 
-class CompositeMask(models_db.Model):
+class CompositeMask(MaskBase):
     """
     A model for storing composite masks, which are combinations of multiple masks.
 
