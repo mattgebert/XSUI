@@ -5,10 +5,14 @@ These models define the structure of the database tables for storing image data,
 """
 
 import sqlalchemy as sa
-from XSUI.webapp.dash.models import models_db
+import sqlalchemy.orm as orm
 
 
-class ImageWAXS(models_db.Model):
+class ImageBase(orm.DeclarativeBase):
+    pass
+
+
+class ImageWAXS(ImageBase):
     __tablename__ = "waxs_images"
 
     id = sa.Column(sa.Integer, primary_key=True)
@@ -23,7 +27,7 @@ class ImageWAXS(models_db.Model):
         self.image_data = image_data
 
 
-class ImageCalibrant(models_db.Model):
+class ImageCalibrant(ImageBase):
     __tablename__ = "calibrant_images"
 
     id = sa.Column(sa.Integer, primary_key=True)
@@ -38,7 +42,7 @@ class ImageCalibrant(models_db.Model):
         self.image_data = image_data
 
 
-class ImageGIWAXS(models_db.Model):
+class ImageGIWAXS(ImageBase):
     __tablename__ = "giwaxs_images"
 
     id = sa.Column(sa.Integer, primary_key=True)
