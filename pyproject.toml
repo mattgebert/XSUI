@@ -40,6 +40,7 @@
         "dash",
         "dash_bootstrap_components",
         # "uvicorn[standard]",
+        "uvicorn",
         "svg.path",
         "flask",
         "sqlalchemy",

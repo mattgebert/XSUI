@@ -20,7 +20,15 @@ server.app_context().push()
 
 # Initialize the app - incorporate a Dash Bootstrap theme
 external_stylesheets = [dbc.themes.CERULEAN]
-app = Dash(__name__, server=server, external_stylesheets=external_stylesheets)
+requests_pathname_prefix = os.getenv("XSUI_DASH_REQUESTS_PATHNAME_PREFIX", "/")
+"""Public URL prefix used by Dash when generating asset and API request URLs."""
+
+app = Dash(
+    __name__,
+    server=server,
+    external_stylesheets=external_stylesheets,
+    requests_pathname_prefix=requests_pathname_prefix,
+)
 # db = SQLAlchemy(server)
 # # db.init_app(server)
 # # db = SQLAlchemy(server)
@@ -35,12 +43,10 @@ app = Dash(__name__, server=server, external_stylesheets=external_stylesheets)
 
 # Create the tabs
 from XSUI.webapp.dash.tabs import CalibrationTab
-from XSUI.webapp.dash.tabs import GIWAXSTab
-from XSUI.webapp.dash.tabs import WAXSTab
+from XSUI.webapp.dash.tabs import ReductionTab
 
 calibrant_tab = CalibrationTab()
-giwaxs_tab = GIWAXSTab()
-waxs_tab = WAXSTab()
+reduction_tab = ReductionTab()
 
 # App layout
 app.layout = dbc.Container(
@@ -77,7 +83,7 @@ app.layout = dbc.Container(
                 ),
             ]
         ),
-        dcc.Tabs([calibrant_tab, giwaxs_tab, waxs_tab]),
+        dcc.Tabs([calibrant_tab, reduction_tab], id="main-tabs"),
     ],
     fluid=True,
 )

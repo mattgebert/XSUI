@@ -2,12 +2,12 @@
 Define the main entry point for the XSUI web application.
 """
 
-# Prevent use of pycache.
+import os
+import subprocess
 import sys
 
+# Prevent use of pycache.
 sys.dont_write_bytecode = True
-
-import subprocess, os
 
 # # Attempt to run the XSUI webapp application
 # path = os.getcwd()
@@ -15,13 +15,17 @@ import subprocess, os
 # print(f"Launching XSUI webapp at {app_path}...")
 # subprocess.run(["fastapi", "dev", app_path], shell=True, check=True)
 
-path = os.getcwd()
+def main() -> None:
+	"""Launch the XSUI FastAPI application via the current Python interpreter."""
+	path = os.getcwd()
+	"""Current working directory used to construct the app path."""
 
-# Pure Dash App:
-# app_path = os.path.join(path, "XSUI", "webapp", "dash", "main.py")
+	app_path = os.path.join(path, "XSUI", "webapp", "fastapi", "main.py")
+	"""Path to the FastAPI entry module."""
 
-# FastAPI App:
-app_path = os.path.join(path, "XSUI", "webapp", "fastapi", "main.py")
+	print(f"Launching XSUI webapp at {app_path}...")
+	subprocess.run([sys.executable, app_path], shell=False, check=True)
 
-print(f"Launching XSUI webapp at {app_path}...")
-subprocess.run(["python", app_path], shell=True, check=True)
+
+if __name__ == "__main__":
+	main()

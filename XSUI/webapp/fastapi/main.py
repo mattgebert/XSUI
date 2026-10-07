@@ -4,8 +4,13 @@ import sqlite3
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
 import uvicorn
-from XSUI.webapp.fastapi.dash_tabs.dash_main import dash_app
 from fastapi.middleware.wsgi import WSGIMiddleware
+
+os.environ.setdefault("XSUI_DASH_REQUESTS_PATHNAME_PREFIX", "/dashboard1/")
+"""Ensure Dash emits URLs with FastAPI mount prefix for frontend asset loading."""
+
+from XSUI.webapp.dash.main import app as dash_app
+from XSUI.webapp.dash.callbacks import *
 
 
 temp_dir = tempfile.gettempdir()

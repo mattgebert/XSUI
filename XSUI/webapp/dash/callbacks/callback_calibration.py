@@ -1,128 +1,66 @@
-# Import packages
-from typing import Optional
-from dash import Dash, html, dash_table, dcc, callback, Output, Input, State, ctx
-import fabio.readbytestream
-import pandas as pd
-import numpy as np
-import plotly.express as px, plotly.graph_objects as go
-import dash_bootstrap_components as dbc
-from dash.exceptions import PreventUpdate
-from pyFAI.detectors import _detector_class_names
-from pyFAI.calibrant import ALL_CALIBRANTS
-from pyFAI.io.ponifile import PoniFile
-from pyFAI.detectors import Detector, detector_factory
-import fabio
-from svg.path import parse_path
-import os
-import base64
+"""Dash callbacks for calibration and shared calibration state."""
+
+from __future__ import annotations
+
 import io
-import json
-import scipy.constants as sc
-import datetime
+from pathlib import Path
+from typing import Any, Optional
 
-# from XSUI.webapp.dash.models import (
-#     ImageCalibrant,
-#     DetectorMask,
-#     CustomMask,
-#     CompositeMask,
-# )
-# from XSUI.webapp.dash.main import db
+import numpy as np
+import plotly.graph_objects as go
+from dash import Input, Output, State, callback, dcc, no_update
+from dash.exceptions import PreventUpdate
+from pyFAI.io.ponifile import PoniFile
 
-
-#################################################
-#### Functions
-#################################################
-def decode_PONI_file(contents: str) -> PoniFile:
-    """
-    Copied from pyFAI.io.ponifile.PoniFile.read_from_string
-    TODO: Have a method that can read from a string IO buffer instead of a file path.
-    """
-    # First split by sub dict groups, then by lines
-    import collections
-
-    data = collections.OrderedDict()
-    poni = PoniFile()
-    for line in contents.splitlines():
-        if line.startswith("#") or (":" not in line):
-            continue
-        words = line.split(":", 1)
-
-        key = words[0].strip().lower()
-        try:
-            value = words[1].strip()
-        except Exception as error:  # IGNORE:W0703:
-            print("Error %s with line: %s", error, line)
-        data[key] = value
-    poni.read_from_dict(data)
-    return poni
-
-
-def wavelength_to_energy(wavelength: float) -> float:
-    """
-    Convert wavelength in m to energy in eV.
-    Uses the formula E = hc / λ, where h is Planck's constant and c is the speed of light.
-    """
-    if wavelength <= 0:
-        wavelength = abs(wavelength)
-    return sc.h * sc.c / (wavelength) / sc.e
-
-
-def pixel_beamcentre(poni: PoniFile, detector: Detector):
-    psize = detector.pixel1, detector.pixel2
-    detect_coords = np.array([0, 0, 0])  # Beam centre
-    pix_coords = np.array([1 / psize[0], 1 / psize[1], 0]) * (
-        detect_coords - np.array([-poni.poni1, -poni.poni2, poni.dist])
-    ) - np.array([0.5, 0.5, 0])
-    """The pixel coordinates (y,x) of the beam centre in the image"""
-    return pix_coords
-
-
-#################################################
-#### CALLBACKS
-#################################################
-
-
-### Poni File
-@callback(
-    Output("calibration_tab-poni_file", "data"),
-    Output("poni-filename", "children"),
-    Input("calibration_tab-upload_poni", "filename"),
-    Input("calibration_tab-upload_poni", "contents"),
-    prevent_initial_call=True,
-    running=[(Output("calibration_tab-upload_poni", "disabled"), True, False)],
+from XSUI.webapp.services.calibration_service import (
+    build_calibration_figure,
+    build_qspace_overlay_figure,
+    compute_qspace_image_data,
+    deserialize_poni,
+    read_calibration_image,
+    read_poni_file,
+    run_geometry_refinement,
+    serialize_poni,
+    wavelength_to_energy,
 )
-def upload_poni_file(filename: str, contents: str) -> tuple[PoniFile | None, str]:
-    """Process the uploaded PONI file and return its contents."""
-    if filename:
-        # Decode the base64 contents
-        content_type, content_string = contents.split(",")
-        decoded = base64.b64decode(content_string)
-        # perform a second decode from bytes to string
-        decoded = decoded.decode("utf-8")
-
-        try:
-            poni_file = decode_PONI_file(decoded)
-            return json.dumps(poni_file.as_dict()), filename
-        except Exception as e:
-            return None, f"Error loading PONI file `{filename}`:\n{str(e)}"
-    return None, "No PONI file uploaded."
+from XSUI.webapp.services.file_dialogs import select_file
 
 
-@callback(
-    Output("calibration_tab-download-poni", "data"),
-    Input("calibration_tab-btn-download_poni", "n_clicks_timestamp"),
-    State("calibration_tab-input-wavelength", "value"),
-    State("calibration_tab-input-sdd", "value"),
-    State("calibration_tab-input-poni1", "value"),
-    State("calibration_tab-input-poni2", "value"),
-    State("calibration_tab-input-rot1", "value"),
-    State("calibration_tab-input-rot2", "value"),
-    State("calibration_tab-input-rot3", "value"),
-    State("calibration_tab-input-detector_dropdown", "value"),
-    prevent_initial_call=True,
-)
-def save_poni_file(
-    n_clicks_timestamp: int,
+def _status_message(message: str, *, is_error: bool = False) -> str:
+    """Return formatted status message text."""
+    prefix: str = "ERROR" if is_error else "INFO"
+    return f"{prefix}: {message}"
+
+
+def _indicator_text(calibrated: bool) -> str:
+    """Return indicator label for calibration state."""
+    return "Calibrated" if calibrated else "Not calibrated"
+
+
+def _indicator_style(calibrated: bool) -> dict[str, str]:
+    """Return style map for calibration state indicator."""
+    if calibrated:
+        return {
+            "color": "#155724",
+            "backgroundColor": "#d4edda",
+            "border": "1px solid #c3e6cb",
+            "padding": "0.25rem 0.5rem",
+            "borderRadius": "0.25rem",
+            "display": "inline-block",
+        }
+    return {
+        "color": "#721c24",
+        "backgroundColor": "#f8d7da",
+        "border": "1px solid #f5c6cb",
+        "padding": "0.25rem 0.5rem",
+        "borderRadius": "0.25rem",
+        "display": "inline-block",
+    }
+
+
+def _build_effective_poni(
+    poni_payload: Optional[str],
+    detector_name: Optional[str],
     wavelength: Optional[float],
     sdd: Optional[float],
     poni1: Optional[float],
@@ -130,490 +68,822 @@ def save_poni_file(
     rot1: Optional[float],
     rot2: Optional[float],
     rot3: Optional[float],
-    detector: Optional[str],
-) -> dict:
-    """Save the PONI file to a specific location."""
-    file = PoniFile(
-        **{
-            "dist": sdd,
-            "poni1": poni1,
-            "poni2": poni2,
-            "rot1": np.deg2rad(rot1) if rot1 is not None else 0.0,
-            "rot2": np.deg2rad(rot2) if rot2 is not None else 0.0,
-            "rot3": np.deg2rad(rot3) if rot3 is not None else 0.0,
-            "wavelength": wavelength,
-            "detector": detector,
-        }
+) -> Optional[PoniFile]:
+    """Build the effective geometry from payload and current editor fields."""
+    if poni_payload is None:
+        if all(
+            value is not None
+            for value in [wavelength, sdd, poni1, poni2, rot1, rot2, rot3]
+        ):
+            return PoniFile(
+                wavelength=float(wavelength),
+                dist=float(sdd),
+                poni1=float(poni1),
+                poni2=float(poni2),
+                rot1=float(np.deg2rad(rot1)),
+                rot2=float(np.deg2rad(rot2)),
+                rot3=float(np.deg2rad(rot3)),
+                detector=detector_name,
+            )
+        return None
+
+    base = deserialize_poni(poni_payload)
+    effective_wavelength = wavelength
+    if effective_wavelength is None and getattr(base, "wavelength", None):
+        effective_wavelength = float(base.wavelength)
+
+    if all(
+        value is not None
+        for value in [effective_wavelength, sdd, poni1, poni2, rot1, rot2, rot3]
+    ):
+        return PoniFile(
+            wavelength=float(effective_wavelength),
+            dist=float(sdd),
+            poni1=float(poni1),
+            poni2=float(poni2),
+            rot1=float(np.deg2rad(rot1)),
+            rot2=float(np.deg2rad(rot2)),
+            rot3=float(np.deg2rad(rot3)),
+            detector=detector_name or str(base.detector.__class__.__name__),
+        )
+
+    # Keep mutable fields aligned with editor values without trying to set wavelength.
+    if detector_name and base.detector is None:
+        base.detector = detector_name
+    if sdd is not None:
+        base.dist = float(sdd)
+    if poni1 is not None:
+        base.poni1 = float(poni1)
+    if poni2 is not None:
+        base.poni2 = float(poni2)
+    if rot1 is not None:
+        base.rot1 = float(np.deg2rad(rot1))
+    if rot2 is not None:
+        base.rot2 = float(np.deg2rad(rot2))
+    if rot3 is not None:
+        base.rot3 = float(np.deg2rad(rot3))
+    return base
+
+
+def _build_qspace_figure_from_cache(
+    qspace_cache: dict[str, list],
+    calibrant_name: str,
+    ring_q_values: list[float],
+) -> go.Figure:
+    """Build q-space overlay figure from precomputed cache payload."""
+    transformed = np.asarray(qspace_cache["z"])
+    axis_x = np.asarray(qspace_cache["x"])
+    axis_y = np.asarray(qspace_cache["y"])
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Heatmap(
+            x=axis_x,
+            y=axis_y,
+            z=transformed,
+            colorscale="Inferno",
+            colorbar={"title": "log10(I)"},
+            name="Q-space",
+        )
     )
-    # Get file output as string
-    f = io.StringIO()
-    file.write(f)
-    f.seek(0)
-    # Convert string to bytes
-    file_bytes = f.read().encode("utf-8")
-    return dcc.send_bytes(
-        file_bytes,
-        f"{datetime.datetime.today().strftime('%Y-%m-%d')}-{detector}.poni",
+
+    for index, q_value in enumerate(ring_q_values):
+        if q_value <= 0:
+            continue
+        theta = np.linspace(0, 2 * np.pi, 361)
+        x_coords = q_value * np.cos(theta)
+        y_coords = q_value * np.sin(theta)
+        in_bounds = (
+            (x_coords >= float(np.min(axis_x)))
+            & (x_coords <= float(np.max(axis_x)))
+            & (y_coords >= float(np.min(axis_y)))
+            & (y_coords <= float(np.max(axis_y)))
+        )
+        if not np.any(in_bounds):
+            continue
+        figure.add_trace(
+            go.Scatter(
+                x=x_coords[in_bounds],
+                y=y_coords[in_bounds],
+                mode="lines",
+                line={"color": "cyan", "width": 1, "dash": "dash"},
+                name=f"{calibrant_name} ring {index + 1}",
+                showlegend=index == 0,
+            )
+        )
+
+    figure.update_layout(
+        title="Calibrated Q-space with Calibrant Rings",
+        xaxis_title="Qx (nm^-1)",
+        yaxis_title="Qy (nm^-1)",
+    )
+    figure.update_yaxes(scaleanchor="x", scaleratio=1)
+    return figure
+
+
+@callback(
+    Output("calibration_tab-poni_file", "data"),
+    Output("poni-filename", "children"),
+    Output("calibration_tab-ready", "data", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "children", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "style", allow_duplicate=True),
+    Output("calibration_tab-display_mode", "data", allow_duplicate=True),
+    Output("calibration_tab-ring_q_values", "data", allow_duplicate=True),
+    Output("calibration_tab-selected_label", "data", allow_duplicate=True),
+    Output("calibration_tab-suppress_invalidate", "data", allow_duplicate=True),
+    Input("calibration_tab-btn-select_poni", "n_clicks"),
+    prevent_initial_call=True,
+)
+def select_poni_file(
+    _: int,
+) -> tuple[
+    Optional[str],
+    str,
+    bool,
+    str,
+    dict[str, str],
+    str,
+    list[float],
+    Optional[str],
+    bool,
+]:
+    """Select and load a local PONI file via PyQt dialog."""
+    try:
+        selected_path = select_file("Select a PONI file", "PONI Files (*.poni)")
+    except Exception as exc:
+        return (
+            None,
+            _status_message(f"File dialog failed: {exc}", is_error=True),
+            False,
+            _indicator_text(False),
+            _indicator_style(False),
+            "pixel",
+            [],
+            None,
+            False,
+        )
+
+    if not selected_path:
+        return (
+            no_update,
+            _status_message("No PONI file selected.", is_error=True),
+            False,
+            _indicator_text(False),
+            _indicator_style(False),
+            "pixel",
+            [],
+            None,
+            False,
+        )
+
+    try:
+        poni = read_poni_file(selected_path)
+    except Exception as exc:
+        return (
+            None,
+            _status_message(f"Failed to load PONI: {exc}", is_error=True),
+            False,
+            _indicator_text(False),
+            _indicator_style(False),
+            "pixel",
+            [],
+            None,
+            False,
+        )
+
+    return (
+        serialize_poni(poni),
+        f"Loaded PONI: {selected_path}",
+        False,
+        _indicator_text(False),
+        _indicator_style(False),
+        "pixel",
+        [],
         None,
+        True,
     )
 
 
-# Propagate PONI file data
+@callback(
+    Output("calibration_tab-cache_dropdown", "options"),
+    Input("calibration_tab-cache", "data"),
+)
+def sync_cache_dropdown_options(cache_payload: Optional[dict]) -> list[dict[str, str]]:
+    """Hydrate cache dropdown options from persistent local storage."""
+    cache = cache_payload or {}
+    return [{"label": key, "value": key} for key in sorted(cache.keys())]
+
+
+@callback(
+    Output("calibration_tab-ready", "data", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "children", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "style", allow_duplicate=True),
+    Output("calibration_tab-display_mode", "data", allow_duplicate=True),
+    Output("calibration_tab-ring_q_values", "data", allow_duplicate=True),
+    Input("calibration_tab-input-wavelength", "value"),
+    Input("calibration_tab-input-energy", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    State("calibration_tab-suppress_invalidate", "data"),
+    prevent_initial_call=True,
+)
+def invalidate_calibration_on_edit(
+    wavelength: Optional[float],
+    energy: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+    detector_name: Optional[str],
+    suppress_invalidate: Optional[bool],
+) -> tuple[object, object, object, object, object]:
+    """Clear calibrated state whenever the PONI editor is manually changed."""
+    _ = wavelength, energy, sdd, poni1, poni2, rot1, rot2, rot3, detector_name
+    if bool(suppress_invalidate):
+        return no_update, no_update, no_update, no_update, no_update
+    return False, _indicator_text(False), _indicator_style(False), "pixel", []
+
+
+@callback(
+    Output("calibration_tab-display_mode_toggle", "style"),
+    Input("calibration_tab-ready", "data"),
+    Input("calibration_tab-image_data", "data"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-input-energy", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+)
+def update_display_toggle_style(
+    calibration_ready: Optional[bool],
+    image_data_payload: Optional[list],
+    detector_name: Optional[str],
+    energy: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+) -> dict[str, float | str]:
+    """Enable the pixel/q-space toggle only once calibration is ready."""
+    has_complete_poni = all(
+        value is not None for value in [detector_name, energy, sdd, poni1, poni2, rot1, rot2, rot3]
+    )
+    can_toggle = bool(calibration_ready) or (image_data_payload is not None and has_complete_poni)
+    if can_toggle:
+        return {"pointerEvents": "auto", "opacity": 1.0}
+    return {"pointerEvents": "none", "opacity": 0.5}
+
+
+@callback(
+    Output("calibration_tab-btn-run_calibration", "disabled"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-input-energy", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+)
+def toggle_run_calibration_button(
+    detector_name: Optional[str],
+    energy: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+) -> bool:
+    """Enable Run Calibration only when all required PONI fields are populated."""
+    required_fields = [detector_name, energy, sdd, poni1, poni2, rot1, rot2, rot3]
+    return not all(field is not None for field in required_fields)
+
+
+@callback(
+    Output("calibration_tab-input-energy", "value", allow_duplicate=True),
+    Input("calibration_tab-input-wavelength", "value"),
+    prevent_initial_call=True,
+)
+def sync_energy_from_wavelength(wavelength: Optional[float]) -> Optional[float]:
+    """Infer energy from wavelength edits instead of mutating PONI wavelength in-place."""
+    if wavelength in (None, 0):
+        return no_update
+    return float(wavelength_to_energy(float(wavelength)))
+
+
+@callback(
+    Output("calibration_tab-qspace_cache", "data"),
+    Input("calibration_tab-image_data", "data"),
+    Input("calibration_tab-poni_file", "data"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-input-wavelength", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+    State("calibration_tab-image_plot_mask", "data"),
+    prevent_initial_call=True,
+)
+def precompute_qspace_cache(
+    image_data_payload: Optional[list],
+    poni_payload: Optional[str],
+    detector_name: Optional[str],
+    wavelength: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+    mask_data: Optional[list],
+) -> Optional[dict[str, list]]:
+    """Precompute q-space map data to make display-mode switches responsive."""
+    if image_data_payload is None:
+        return None
+
+    effective_poni = _build_effective_poni(
+        poni_payload=poni_payload,
+        detector_name=detector_name,
+        wavelength=wavelength,
+        sdd=sdd,
+        poni1=poni1,
+        poni2=poni2,
+        rot1=rot1,
+        rot2=rot2,
+        rot3=rot3,
+    )
+    if effective_poni is None:
+        return None
+
+    image_data = np.asarray(image_data_payload)
+    mask = np.asarray(mask_data) if mask_data is not None else None
+    transformed, axis_x, axis_y = compute_qspace_image_data(
+        image_data=image_data,
+        poni=effective_poni,
+        mask=mask,
+        npt=800,
+    )
+    return {
+        "z": transformed.tolist(),
+        "x": axis_x.tolist(),
+        "y": axis_y.tolist(),
+    }
+
+
+@callback(
+    Output("calibration_tab-image_plot", "figure", allow_duplicate=True),
+    Input("calibration_tab-image_data", "data"),
+    Input("calibration_tab-poni_file", "data"),
+    Input("calibration_tab-display_mode_toggle", "value"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-calibrant_dropdown", "value"),
+    Input("calibration_tab-input-wavelength", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+    Input("calibration_tab-qspace_cache", "data"),
+    State("calibration_tab-image_plot_mask", "data"),
+    State("calibration_tab-ring_q_values", "data"),
+    prevent_initial_call=True,
+)
+def update_calibration_preview(
+    image_data_payload: Optional[list],
+    poni_payload: Optional[str],
+    display_mode: Optional[str],
+    detector_name: Optional[str],
+    calibrant_name: Optional[str],
+    wavelength: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+    qspace_cache: Optional[dict[str, list]],
+    mask_data: Optional[list],
+    ring_q_values: Optional[list[float]],
+) -> go.Figure:
+    """Render calibration preview in pixel or q-space using current editor geometry."""
+    if image_data_payload is None:
+        raise PreventUpdate
+
+    image_data = np.asarray(image_data_payload)
+    mask = np.asarray(mask_data) if mask_data is not None else None
+    effective_poni = _build_effective_poni(
+        poni_payload=poni_payload,
+        detector_name=detector_name,
+        wavelength=wavelength,
+        sdd=sdd,
+        poni1=poni1,
+        poni2=poni2,
+        rot1=rot1,
+        rot2=rot2,
+        rot3=rot3,
+    )
+
+    if display_mode == "qspace" and qspace_cache is not None:
+        return _build_qspace_figure_from_cache(
+            qspace_cache=qspace_cache,
+            calibrant_name=calibrant_name or "Calibrant",
+            ring_q_values=ring_q_values or [],
+        )
+
+    return build_calibration_figure(
+        image_data,
+        poni=effective_poni,
+        detector_name=detector_name,
+        calibrant_name=calibrant_name,
+    )
+
+
+@callback(
+    Output("calibration_tab-image_path", "data"),
+    Output("calibration_tab-image_data", "data"),
+    Output("calibration_tab-uploaded_filename", "children"),
+    Output("calibration_tab-image_plot", "figure"),
+    Input("calibration_tab-btn-select_calibration_data", "n_clicks"),
+    State("calibration_tab-poni_file", "data"),
+    State("calibration_tab-input-detector_dropdown", "value"),
+    State("calibration_tab-calibrant_dropdown", "value"),
+    prevent_initial_call=True,
+)
+def select_calibration_image(
+    _: int,
+    poni_payload: Optional[str],
+    detector_name: Optional[str],
+    calibrant_name: Optional[str],
+) -> tuple[Optional[str], Optional[list], str, go.Figure]:
+    """Select local calibration image and update figure."""
+    try:
+        selected_path = select_file(
+            "Select calibration image",
+            "Detector Images (*.tif *.tiff *.edf *.cbf);;All Files (*)",
+        )
+    except Exception as exc:
+        figure = go.Figure(layout={"title": "Calibrant Image (Draw Pixel Mask)"})
+        return (
+            no_update,
+            no_update,
+            _status_message(f"File dialog failed: {exc}", is_error=True),
+            figure,
+        )
+
+    if not selected_path:
+        return no_update, no_update, _status_message("No calibration image selected.", is_error=True), no_update
+
+    try:
+        image_data = read_calibration_image(selected_path)
+    except Exception as exc:
+        figure = go.Figure(layout={"title": "Calibrant Image (Draw Pixel Mask)"})
+        return None, None, _status_message(f"Failed to load image: {exc}", is_error=True), figure
+
+    poni = deserialize_poni(poni_payload) if poni_payload else None
+    figure = build_calibration_figure(
+        image_data,
+        poni=poni,
+        detector_name=detector_name,
+        calibrant_name=calibrant_name,
+    )
+    return selected_path, image_data.tolist(), f"Calibration image: {selected_path}", figure
+
+
 @callback(
     Output("calibration_tab-input-detector_dropdown", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_detector_dropdown(poni_file: str) -> Optional[str]:
-    """Update the detector dropdown based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        detector = poni_dict.get("detector")
-        if detector in _detector_class_names:
-            return detector
-        else:
-            print(f"Detector {detector} not found in known detector classes.")
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-wavelength", "value"),
     Output("calibration_tab-input-energy", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_wavelength_energy_input(
-    poni_file: str,
-) -> tuple[Optional[float], Optional[float]]:
-    """Update the wavelength input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        wavelength = poni_dict.get("wavelength")
-        if wavelength is not None:
-            wavelength = float(wavelength)
-            energy = wavelength_to_energy(wavelength)
-            return wavelength, energy
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-sdd", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_sample_detector_distance_input(poni_file: str) -> Optional[float]:
-    """Update the sample-detector distance input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        distance = poni_dict.get("dist")
-        if distance is not None:
-            return float(distance)
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-poni1", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_poni1_input(poni_file: str) -> Optional[float]:
-    """Update the PONI 1 input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        poni1 = poni_dict.get("poni1")
-        if poni1 is not None:
-            return float(poni1)
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-poni2", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_poni2_input(poni_file: str) -> Optional[float]:
-    """Update the PONI 2 input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        poni2 = poni_dict.get("poni2")
-        if poni2 is not None:
-            return float(poni2)
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-rot1", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_rotation1_input(poni_file: str) -> Optional[float]:
-    """Update the rotation 1 input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        rotation1 = poni_dict.get("rot1")
-        if rotation1 is not None:
-            return np.rad2deg(float(rotation1))
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-rot2", "value"),
-    Input("calibration_tab-poni_file", "data"),
-    prevent_initial_call=True,
-)
-def update_rotation2_input(poni_file: str) -> Optional[float]:
-    """Update the rotation 2 input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        rotation2 = poni_dict.get("rot2")
-        if rotation2 is not None:
-            return np.rad2deg(float(rotation2))
-    raise PreventUpdate
-
-
-@callback(
     Output("calibration_tab-input-rot3", "value"),
+    Output("calibration_tab-suppress_invalidate", "data", allow_duplicate=True),
     Input("calibration_tab-poni_file", "data"),
     prevent_initial_call=True,
 )
-def update_rotation3_input(poni_file: str) -> Optional[float]:
-    """Update the rotation 3 input based on the PONI file."""
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        rotation3 = poni_dict.get("rot3")
-        if rotation3 is not None:
-            return np.rad2deg(float(rotation3))
-    raise PreventUpdate
+def update_poni_inputs(poni_payload: Optional[str]) -> tuple[Any, ...]:
+    """Hydrate form fields from selected or loaded PONI data."""
+    if not poni_payload:
+        raise PreventUpdate
+
+    poni = deserialize_poni(poni_payload)
+    wavelength = float(poni.wavelength) if poni.wavelength else None
+    energy = wavelength_to_energy(wavelength) if wavelength else None
+    return (
+        str(poni.detector.__class__.__name__) if poni.detector else None,
+        wavelength,
+        energy,
+        float(poni.dist),
+        float(poni.poni1),
+        float(poni.poni2),
+        float(np.rad2deg(poni.rot1)),
+        float(np.rad2deg(poni.rot2)),
+        float(np.rad2deg(poni.rot3)),
+        False,
+    )
 
 
-## Figure Generation
 @callback(
-    Output("calibration_tab-image_data", "data"),
-    Output("calibration_tab-image_plot", "figure"),
-    Output("calibration_tab-uploaded_filename", "children"),
-    Input("calibration_tab-upload_calibration_data", "contents"),
-    Input("calibration_tab-upload_calibration_data", "filename"),
-    Input("calibration_tab-poni_file", "data"),
-    Input("calibration_tab-image_plot_mask", "data"),
-    State("calibration_tab-image_plot", "figure"),
-    State("calibration_tab-input-detector_dropdown", "value"),
-    State("calibration_tab-image_data", "data"),
-    running=[
-        (Output("calibration_tab-upload_calibration_data", "disabled"), True, False),
-    ],
+    Output("calibration_tab-download-poni", "data"),
+    Input("calibration_tab-btn-download_poni", "n_clicks"),
+    State("calibration_tab-poni_file", "data"),
+    State("calibration_tab-selected_label", "data"),
     prevent_initial_call=True,
 )
-def figure_callback(
-    img_upload_contents: str,
-    filename: str,
-    poni_file: str,
-    mask_data: np.ndarray | None,
-    figure: go.Figure,
-    detector: str,
-    fig_data: np.ndarray | None,
-    # figure: go.Figure,
-    # detector: str,
-) -> tuple[np.ndarray | None, go.Figure, str]:
-    # Get the ID name of the trigger
-    trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
+def save_poni_file(
+    _: int,
+    poni_payload: Optional[str],
+    selected_label: Optional[str],
+) -> dict:
+    """Download the currently selected calibration PONI."""
+    if not poni_payload:
+        raise PreventUpdate
 
-    print("Trigger ID:", trigger_id)
-    # Whether to create a new figure or not from uploaded data:
-    if trigger_id == "calibration_tab-upload_calibration_data":
-        fig, fig_data = upload_calibration_data(img_upload_contents, filename)
-    else:
-        fig = figure
-        # query = db.session.query(ImageCalibrant)
-        # calibrant_image = query.filter_by(filename=filename)
-        # print("The Query is :", calibrant_image)
-        # calibrant_image = calibrant_image.first()
-        # if calibrant_image:
-        #     fig_data = calibrant_image.image_data
-        # else:
-        #     fig_data = None
-        #     print(f"Image data for {filename} not found in database.")
-
-    # Add beam centre scatter if PONI file is available
-    if trigger_id == "calibration_tab-poni_file":
-        # Update or add the beam centre scatter trace
-        fig = update_image_figure_beamcentre(poni_file, fig, detector)
-
-    if trigger_id == "calibration_tab-image_plot_mask":
-        # Update or add the mask heatmap trace
-        fig = update_image_figure_mask(mask_data, fig)
-
-    return (fig_data, fig, filename)
-
-
-### Calibration Data Upload
-def upload_calibration_data(
-    contents: str,
-    filename: str,
-) -> tuple[go.Figure, np.ndarray | None]:
-    """
-    Process the uploaded calibration data and return a plot.
-
-    Parameters
-    ----------
-    contents : str
-        The base64 encoded contents of the uploaded file.
-    filename : str
-        The name of the uploaded file.
-    Returns
-    -------
-    fig : go.Figure
-        The figure containing the calibration data.
-    data : np.ndarray | None
-        The image data from the uploaded file, or None if no data is available.
-    """
-    # A figure:
-    fig: go.Figure | None = None
-    if contents:
-        # Decode the base64 contents
-        content_type, content_string = contents.split(",")
-        print("Got content type:", content_type, "for filename:", filename)
-        decoded = base64.b64decode(content_string)
-        byte_buffer_data = io.BytesIO(
-            decoded
-        )  # Use BytesIO to read the bytes as a file-like object
-        byte_buffer_data.name = filename
-        byte_buffer_data.seek(0)
-
-        fabio_data = fabio.open(byte_buffer_data)
-        # fabio_data = fabio.openimage._openimage(byte_buffer_data)
-
-        data = fabio_data.data
-
-        # Place the image data into the database.
-        # db_img = ImageCalibrant(filename, data)
-        # db.session.add(db_img)
-        # db.session.commit()
-        # print("Image data added to database.")
-
-        fig = px.imshow(
-            np.log10(fabio_data.data),
-            color_continuous_scale="inferno",
-            title="Calibrant Image (Draw Pixel Mask)",
-            labels={"color": "Intensity (log10)"},
-        )
-    else:
-        fig = go.Figure(
-            layout={
-                "title": "Calibrant Image (Draw Pixel Mask)",
-            }
-        )
-        data = None
-
-    return fig, data
-
-
-def update_image_figure_beamcentre(
-    poni_file: str, figure: go.Figure, detector: str
-) -> go.Figure:
-    # Check if figure already has a heatmap trace
-    has_beamcentre_scatter = False
-    bc_obj = None
-    if "data" in figure:
-        for ax_obj in figure["data"]:
-            if ax_obj["type"] == "scatter" and ax_obj["name"] == "Beam Centre":
-                bc_obj = ax_obj
-                has_beamcentre_scatter = True
-                break
-
-    bc_coords = None
-    if poni_file:
-        poni_dict: dict = json.loads(poni_file)
-        poni = PoniFile(**poni_dict)
-        det = detector_factory(detector) if detector else poni.detector
-        if det:
-            bc_coords = pixel_beamcentre(poni, det)
-
-    if bc_coords is not None:
-        if bc_obj:
-            # Update the existing scatter trace with new beam centre coordinates
-            bc_obj["x"] = [bc_coords[1]]
-            bc_obj["y"] = [bc_coords[0]]
-        else:
-            # Create new tracefigure.add_trace(
-            go.Scatter(
-                x=[bc_coords[1]],
-                y=[bc_coords[0]],
-                mode="markers",
-                marker=dict(color="red", size=10, symbol="x"),
-                name="Beam Centre",
-            )
-    elif has_beamcentre_scatter and bc_obj:
-        # If no beam centre coordinates, remove the scatter trace
-        figure["data"] = [
-            ax_obj
-            for ax_obj in figure["data"]
-            if not (ax_obj["type"] == "scatter" and ax_obj["name"] == "Beam Centre")
-        ]
-    return figure
-
-
-def update_image_figure_mask(
-    mask_data: np.ndarray | None, figure: dict | go.Figure
-) -> go.Figure:
-    # Check if figure already has a heatmap trace
-    if isinstance(figure, dict):
-        figure = go.Figure(**figure)
-    has_mask_heatmap = False
-    heatmap = None
-    if "data" in figure:
-        for ax_obj in figure["data"]:
-            if ax_obj["type"] == "heatmap" and ax_obj["name"] == "Mask":
-                heatmap = ax_obj
-                has_mask_heatmap = True
-                break
-
-    if mask_data:
-        mask_data = np.asarray(mask_data)
-        # If mask data is provided, apply it to the image
-        mask_shape = np.shape(mask_data)
-        x, y = np.indices(mask_shape)
-        colorscale = [[0, "rgba(0,0,0,0)"], [1, "rgba(0,222,256,1)"]]
-        no_hover_mask_data = mask_data.astype(object)
-        no_hover_mask_data[no_hover_mask_data == 0] = (
-            None  # Set non-masked pixels to None
-        )
-
-        if has_mask_heatmap and heatmap:
-            # Update the existing heatmap trace
-            heatmap["z"] = no_hover_mask_data
-
-        if not has_mask_heatmap:
-            figure.add_heatmap(
-                z=no_hover_mask_data,
-                colorscale=colorscale,
-                hoverongaps=False,
-                colorbar=None,
-                showscale=False,
-                # hovertemplate="Mask",
-                name="Mask",
-            )
-    elif has_mask_heatmap:
-        # If no mask data is provided, remove the heatmap trace
-        figure["data"] = [
-            ax_obj
-            for ax_obj in figure["data"]
-            if not (ax_obj["type"] == "heatmap" and ax_obj["name"] == "Mask")
-        ]
-    return figure
+    poni = deserialize_poni(poni_payload)
+    file_name = f"{selected_label or 'calibration'}.poni"
+    buffer = io.StringIO()
+    poni.write(buffer)
+    file_bytes = buffer.getvalue().encode("utf-8")
+    return dcc.send_bytes(file_bytes, file_name, None)
 
 
 @callback(
     Output("calibration_tab-image_plot_mask", "data"),
     Input("calibration_tab-image_plot", "relayoutData"),
-    Input("calibration_tab-input-detector_dropdown", "value"),
-    Input("calibration_tab-input-use_detector_mask", "value"),
     State("calibration_tab-image_data", "data"),
-    State("calibration_tab-image_plot_mask", "data"),
     prevent_initial_call=True,
-    running=[
-        (Output("calibration_tab-upload_calibration_data", "disabled"), True, False),
-        (Output("calibration_tab-upload_poni", "disabled"), True, False),
-        (Output("calibration_tab-image_plot", "interactive"), False, True),
-    ],
 )
-def update_mask(
-    relayoutData: dict,
-    detector: str | None,
-    use_mask: bool,
-    img_data: np.ndarray,
-    existing_mask: np.ndarray,
-) -> np.ndarray | None:
-    # def update_mask(
-    #     relayoutData: dict, detector: str | None, use_mask: bool, existing_mask: np.ndarray
-    # ) -> np.ndarray | None:
-    """Reconstruct the masking based on the relayout data."""
+def update_mask_from_drawing(
+    relayout_data: Optional[dict],
+    image_data_payload: Optional[list],
+) -> Optional[list]:
+    """Update binary mask from user drawing operations."""
+    if image_data_payload is None:
+        raise PreventUpdate
 
-    trigger_id, trigger_sig = ctx.triggered[0]["prop_id"].split(".")
+    image_data = np.asarray(image_data_payload)
+    mask = np.zeros_like(image_data, dtype=bool)
 
-    # Query the database for the image data
-    # query = db.session.query(ImageCalibrant)
-    # if query:
-    #     img_data = query.first().image_data
-    # else:
-    #     img_data = None
+    if not relayout_data or "shapes" not in relayout_data:
+        return mask.tolist()
 
-    masks = []
-    img_data_shape = None
-    if img_data is not None:
-        img_data = np.asarray(img_data)
-        img_data_shape = np.shape(img_data)
-        masks.append(img_data <= 0)  # Add a mask for zero values in the image data
+    y_coords, x_coords = np.indices(image_data.shape)
+    for shape in relayout_data.get("shapes", []):
+        shape_type = shape.get("type")
+        if shape_type == "rect":
+            x0, x1 = sorted([shape.get("x0", 0), shape.get("x1", 0)])
+            y0, y1 = sorted([shape.get("y0", 0), shape.get("y1", 0)])
+            mask |= (x_coords >= x0) & (x_coords <= x1) & (y_coords >= y0) & (y_coords <= y1)
+        elif shape_type == "circle":
+            x0, x1 = shape.get("x0", 0), shape.get("x1", 0)
+            y0, y1 = shape.get("y0", 0), shape.get("y1", 0)
+            center_x = (x0 + x1) / 2
+            center_y = (y0 + y1) / 2
+            radius = abs(x1 - x0) / 2
+            mask |= (x_coords - center_x) ** 2 + (y_coords - center_y) ** 2 <= radius**2
 
-    if detector and use_mask:
-        mask = detector_factory(detector).mask
-        if img_data is not None and np.shape(img_data) == mask.shape:
-            masks.append(mask)
-        elif img_data is None:
-            img_data_shape = mask.shape
-            masks.append(mask)
-        else:
-            print(
-                f"Detector mask shape {mask.shape} does not match image data shape {np.shape(img_data)}. Skipping detector mask."
-            )
+    return mask.tolist()
 
-    if relayoutData and "shapes" in relayoutData:
-        # Process the shapes to update the mask
-        shapes = relayoutData["shapes"]
-        # Create numpy coordinate array
-        coords = np.indices(np.asarray(img_data).shape)
-        # Check each pixel is contained in any of the shapes
-        for shape in shapes:
-            if shape["type"] == "rect":
-                mask = (
-                    (coords[:, 0] >= shape["y0"])
-                    & (coords[:, 0] <= shape["y1"])
-                    & (coords[:, 1] >= shape["x0"])
-                    & (coords[:, 1] <= shape["x1"])
-                )
-            elif shape["type"] == "circle":
-                # Circle mask
-                center_x = (shape["x0"] + shape["x1"]) / 2
-                center_y = (shape["y0"] + shape["y1"]) / 2
-                radius = (shape["x1"] - shape["x0"]) / 2
-                mask = (
-                    (coords[1] - center_x) ** 2 + (coords[0] - center_y) ** 2
-                ) <= radius**2
-            elif shape["type"] == "path":
-                # Get the trace points
-                descrption = shape["path"]
-                path = parse_path(descrption)
-                x_min, y_min, x_max, y_max = path.boundingbox()
 
-                # Use ray tracing method to see if point is contained or not
-                # i.e. from the point of interest, does a line intersect odd or even?
-                mask = np.zeros(img_data_shape, dtype=bool)
-                for y in range(img_data_shape[0]):
-                    for x in range(img_data_shape[1]):
-                        # Check if point (x, y) is inside the path
-                        if x_min < x and x < x_max and y_min < y and y < y_max:
-                            # Could be inside the path
-                            intersections = 0
-                            for segment in path:
-                                # Check if the segment intersects with a horizontal line from (x, y)
-                                # Substitute x value of point into the segment equation:
-                                x0, y0 = segment.start.real, segment.start.imag
-                                x1, y1 = segment.end.real, segment.end.imag
-                                if (x0 < x and x < x1) or (x1 < x and x < x0):
-                                    # X within the segment
-                                    point = (x - x0) / (x1 - x0)
-                                    if np.isclose(
-                                        y, segment.point(point).imag, atol=1e-3
-                                    ):
-                                        # Point is on the segment
-                                        intersections += 1
-                            if intersections % 2 == 1:
-                                mask[y, x] = True
-            else:
-                continue
-            masks.append(mask)
+@callback(
+    Output("calibration_tab-image_plot", "figure", allow_duplicate=True),
+    Output("calibration_tab-cache", "data"),
+    Output("calibration_tab-status", "children"),
+    Output("calibration_tab-poni_file", "data", allow_duplicate=True),
+    Output("calibration_tab-selected_label", "data"),
+    Output("calibration_tab-ready", "data"),
+    Output("calibration_tab-calibrated_indicator", "children", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "style", allow_duplicate=True),
+    Output("calibration_tab-display_mode", "data", allow_duplicate=True),
+    Output("calibration_tab-ring_q_values", "data", allow_duplicate=True),
+    Output("calibration_tab-suppress_invalidate", "data", allow_duplicate=True),
+    Input("calibration_tab-btn-run_calibration", "n_clicks"),
+    State("calibration_tab-image_data", "data"),
+    State("calibration_tab-poni_file", "data"),
+    State("calibration_tab-calibrant_dropdown", "value"),
+    State("calibration_tab-input-max_rings", "value"),
+    State("calibration_tab-input-label", "value"),
+    State("calibration_tab-input-detector_dropdown", "value"),
+    State("calibration_tab-cache", "data"),
+    prevent_initial_call=True,
+)
+def run_calibration(
+    _: int,
+    image_data_payload: Optional[list],
+    poni_payload: Optional[str],
+    calibrant_name: Optional[str],
+    max_rings: Optional[int],
+    calibration_label: Optional[str],
+    detector_name: Optional[str],
+    cache_payload: Optional[dict],
+) -> tuple[go.Figure, dict, str, Optional[str], Optional[str], bool, str, dict[str, str], str, list[float], bool]:
+    """Run calibration refinement and cache the labelled result."""
+    if image_data_payload is None or not poni_payload or not calibrant_name:
+        raise PreventUpdate
 
-    if len(masks) > 0:
-        # Create a new mask
-        mask = np.bitwise_or.reduce([*masks])
-        return mask
-    return None
+    image_data = np.asarray(image_data_payload)
+    initial_poni = deserialize_poni(poni_payload)
+    ring_count = int(max_rings) if max_rings else 5
+    label = (calibration_label or "calibration").strip()
+
+    cache_data: dict[str, Any] = dict(cache_payload or {})
+
+    try:
+        refined_poni, metadata = run_geometry_refinement(
+            image_data=image_data,
+            poni=initial_poni,
+            calibrant_name=calibrant_name,
+            max_rings=ring_count,
+        )
+    except Exception as exc:
+        return (
+            go.Figure(layout={"title": "Calibrated Overlay"}),
+            cache_data,
+            _status_message(f"Calibration failed: {exc}", is_error=True),
+            no_update,
+            no_update,
+            False,
+            _indicator_text(False),
+            _indicator_style(False),
+            "pixel",
+            [],
+            False,
+        )
+
+    refined_payload = serialize_poni(refined_poni)
+    cache_data[label] = {
+        "poni": refined_payload,
+        "calibrant": calibrant_name,
+        "max_rings": ring_count,
+        "detector": detector_name,
+        "metrics": metadata,
+    }
+    overlay = build_qspace_overlay_figure(
+        image_data,
+        calibrant_name=calibrant_name,
+        poni=refined_poni,
+        ring_q_values=metadata.get("ring_q_values", []),
+    )
+    status = (
+        f"Calibration '{label}' saved. "
+        f"chi2: {metadata['initial_chi2']:.4g} -> {metadata['final_chi2']:.4g}."
+    )
+    return (
+        overlay,
+        cache_data,
+        status,
+        refined_payload,
+        label,
+        True,
+        _indicator_text(True),
+        _indicator_style(True),
+        "qspace",
+        metadata.get("ring_q_values", []),
+        True,
+    )
+
+
+@callback(
+    Output("calibration_tab-image_plot", "figure", allow_duplicate=True),
+    Output("calibration_tab-poni_file", "data", allow_duplicate=True),
+    Output("calibration_tab-selected_label", "data", allow_duplicate=True),
+    Output("calibration_tab-status", "children", allow_duplicate=True),
+    Output("calibration_tab-ready", "data", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "children", allow_duplicate=True),
+    Output("calibration_tab-calibrated_indicator", "style", allow_duplicate=True),
+    Output("calibration_tab-display_mode", "data", allow_duplicate=True),
+    Output("calibration_tab-ring_q_values", "data", allow_duplicate=True),
+    Output("calibration_tab-suppress_invalidate", "data", allow_duplicate=True),
+    Input("calibration_tab-btn-load_cache", "n_clicks"),
+    State("calibration_tab-cache", "data"),
+    State("calibration_tab-cache_dropdown", "value"),
+    State("calibration_tab-image_data", "data"),
+    prevent_initial_call=True,
+)
+def load_cached_calibration(
+    _: int,
+    cache_payload: Optional[dict],
+    selected_label: Optional[str],
+    image_data_payload: Optional[list],
+) -> tuple[go.Figure, Optional[str], Optional[str], str, bool, str, dict[str, str], str, list[float], bool]:
+    """Load previously cached calibration by label."""
+    cache = cache_payload or {}
+    if not selected_label or selected_label not in cache:
+        raise PreventUpdate
+
+    item = cache[selected_label]
+    poni_payload = item.get("poni")
+    if not poni_payload:
+        raise PreventUpdate
+
+    image_data = np.asarray(image_data_payload) if image_data_payload is not None else None
+    if image_data is None:
+        figure = go.Figure(layout={"title": f"Loaded calibration: {selected_label}"})
+    else:
+        figure = build_qspace_overlay_figure(
+            image_data,
+            poni=deserialize_poni(poni_payload),
+            calibrant_name=item.get("calibrant"),
+            ring_q_values=item.get("metrics", {}).get("ring_q_values", []),
+        )
+    ring_q_values = item.get("metrics", {}).get("ring_q_values", [])
+    return (
+        figure,
+        poni_payload,
+        selected_label,
+        f"Loaded cached calibration '{selected_label}'.",
+        True,
+        _indicator_text(True),
+        _indicator_style(True),
+        "qspace",
+        ring_q_values,
+        True,
+    )
+
+
+@callback(
+    Output("calibration_tab-cache", "data", allow_duplicate=True),
+    Output("calibration_tab-cache_dropdown", "value", allow_duplicate=True),
+    Output("calibration_tab-status", "children", allow_duplicate=True),
+    Input("calibration_tab-btn-delete_cache", "n_clicks"),
+    State("calibration_tab-cache", "data"),
+    State("calibration_tab-cache_dropdown", "value"),
+    prevent_initial_call=True,
+)
+def delete_cached_calibration(
+    _: int,
+    cache_payload: Optional[dict],
+    selected_label: Optional[str],
+) -> tuple[dict, Optional[str], str]:
+    """Delete one cached calibration entry."""
+    cache_data: dict[str, Any] = dict(cache_payload or {})
+    if not selected_label or selected_label not in cache_data:
+        return (
+            cache_data,
+            selected_label,
+            _status_message("No cached calibration selected for deletion.", is_error=True),
+        )
+
+    cache_data.pop(selected_label, None)
+    return cache_data, None, _status_message(f"Deleted cached calibration '{selected_label}'.")
+
+
+@callback(
+    Output("calibration_tab-cache", "data", allow_duplicate=True),
+    Output("calibration_tab-cache_dropdown", "value", allow_duplicate=True),
+    Output("calibration_tab-status", "children", allow_duplicate=True),
+    Input("calibration_tab-btn-clear_cache", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_cached_calibrations(_: int) -> tuple[dict, Optional[str], str]:
+    """Clear all cached calibrations from local storage."""
+    return {}, None, _status_message("Cleared all cached calibrations.")
+
+
+@callback(
+    Output("tab-reduction", "disabled"),
+    Input("calibration_tab-ready", "data"),
+    Input("calibration_tab-input-detector_dropdown", "value"),
+    Input("calibration_tab-input-energy", "value"),
+    Input("calibration_tab-input-sdd", "value"),
+    Input("calibration_tab-input-poni1", "value"),
+    Input("calibration_tab-input-poni2", "value"),
+    Input("calibration_tab-input-rot1", "value"),
+    Input("calibration_tab-input-rot2", "value"),
+    Input("calibration_tab-input-rot3", "value"),
+)
+def enable_reduction_tab(
+    calibration_ready: Optional[bool],
+    detector_name: Optional[str],
+    energy: Optional[float],
+    sdd: Optional[float],
+    poni1: Optional[float],
+    poni2: Optional[float],
+    rot1: Optional[float],
+    rot2: Optional[float],
+    rot3: Optional[float],
+) -> bool:
+    """Enable Reduction tab after calibration is ready or full PONI fields are populated."""
+    has_poni_fields = all(
+        value is not None
+        for value in [detector_name, energy, sdd, poni1, poni2, rot1, rot2, rot3]
+    )
+    return not (bool(calibration_ready) or has_poni_fields)
