@@ -1,0 +1,11 @@
+poni_version: 2
+Detector: Pilatus2M
+Detector_config: {}
+Distance: 0.700
+Poni1: 0.0214
+Poni2: 0.225
+Rot1: 0
+Rot2: 0
+Rot3: 0
+Wavelength: 8.26561e-11
+abs_scale_factor: 1.0
